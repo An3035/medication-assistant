@@ -13,12 +13,6 @@
 - 💡 **个性化建议**：基于专业知识提供用药建议
 - 💬 **自然对话**：友好的聊天界面，适合老年人使用
 
-## 🎬 演示
-
-![演示GIF](docs/demo.gif)
-
-（明天录制GIF后添加）
-
 ## 📊 项目亮点
 
 - ✅ 收录50+常用药物信息
@@ -39,7 +33,7 @@
 ### 1. 克隆项目
 
 ```bash
-git clone https://github.com/your-username/medication-assistant.git
+git clone https://github.com/An3035/medication-assistant.git
 cd medication-assistant
 ```
 
@@ -89,6 +83,10 @@ medication-assistant/
 
 用户："阿司匹林有什么副作用？"
 助手：阿司匹林最常见的副作用是胃肠道反应...
+
+# - 平均响应时间: X.X秒
+# - 测试通过: ✅
+
 
 ## 📈 开发进度
 

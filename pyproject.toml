@@ -28,6 +28,8 @@ dependencies = [
     # 日志和监控
     "loguru>=0.7.2",
     "dashscope>=1.25.0",
+    # 缓存 - 移除 cachetools，因为我们已经改用内置库
+    "redis>=5.0.0",
 ]
 
 [project.optional-dependencies]
@@ -42,4 +44,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-sources = ["src"]
+packages = ["src"]

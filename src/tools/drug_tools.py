@@ -1,134 +1,89 @@
-# src/tools/drug_tools.py
-"""药物查询工具（最新API）"""
-from typing import Dict, List, Optional
-from langchain_core.tools import tool
+"""药物工具（优化版：从 data/raw/drugs.csv 预加载 + 双层缓存）"""
 
-from src.vectorstore.drug_db import DrugVectorDB
+import csv
+from pathlib import Path
+from typing import Dict, List
+from langchain_core.tools import tool
 from src.utils.logger import log
 
+# ===================== 1. 预加载药物数据到内存（启动时执行一次） =====================
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+DRUGS_CSV_PATH = PROJECT_ROOT / "data" / "raw" / "drugs.csv"
 
-class DrugToolkit:
-    """药物工具集"""
-
-    def __init__(self):
-        """初始化工具集"""
-        self.db = DrugVectorDB()
-        try:
-            self.db.load()
-            log.info("药物数据库加载成功")
-        except FileNotFoundError as e:
-            log.error(f"数据库加载失败: {e}")
-            raise
-
-    @staticmethod
-    @tool
-    def search_drug_info(drug_name: str) -> str:
-        """搜索单个药物的详细信息
-
-        使用这个工具来查询药物的适应症、用法用量、禁忌症、副作用等信息。
-
-        Args:
-            drug_name: 药物名称，例如"阿司匹林"、"布洛芬"
-
-        Returns:
-            药物的详细信息文本
-        """
-        toolkit = DrugToolkit()
-
-        log.info(f"查询药物信息: {drug_name}")
-
-        try:
-            results = toolkit.db.search(drug_name, k=2)
-
-            if not results:
-                return f"❌ 未找到关于'{drug_name}'的信息，请检查药物名称是否正确"
-
-            # 格式化输出
-            info_parts = []
-            for i, doc in enumerate(results, 1):
-                info_parts.append(f"【信息来源 {i}】\n{doc.page_content}")
-
-            result = "\n\n".join(info_parts)
-            log.debug(f"查询成功，返回{len(results)}条结果")
-
-            return result
-
-        except Exception as e:
-            log.error(f"查询失败: {e}")
-            return f"❌ 查询出错: {str(e)}"
-
-    @staticmethod
-    @tool
-    def check_drug_interaction(drugs: str) -> str:
-        """检查多个药物之间的交互风险
-
-        使用这个工具来检查多个药物同时使用是否存在交互风险。
-
-        Args:
-            drugs: 逗号分隔的药物列表，例如"阿司匹林,布洛芬"
-
-        Returns:
-            药物交互风险评估结果
-        """
-        log.info(f"检查药物交互: {drugs}")
-
-        # 解析药物列表
-        drug_list = [d.strip() for d in drugs.split(",")]
-
-        if len(drug_list) < 2:
-            return "⚠️ 需要至少2种药物才能检查交互风险"
-
-        # 已知的药物交互（实际项目应该从数据库读取）
-        known_interactions = {
-            frozenset(["阿司匹林", "布洛芬"]): {
-                "level": "🟡 中度风险",
-                "description": "两者都是非甾体抗炎药（NSAIDs），同时使用可能增加胃肠道出血和溃疡的风险。建议间隔4-6小时服用，或咨询医生选择其中一种。",
-            },
-            frozenset(["阿司匹林", "华法林"]): {
-                "level": "🔴 高度风险",
-                "description": "华法林是抗凝药，与阿司匹林同时使用会显著增加出血风险。必须在医生指导下使用，并定期监测凝血功能。",
-            },
-            frozenset(["布洛芬", "华法林"]): {
-                "level": "🟡 中度风险",
-                "description": "布洛芬可能增强华法林的抗凝作用，增加出血风险。如需同时使用，应在医生监督下进行。",
-            },
-        }
-
-        warnings = []
-
-        # 检查所有药物组合
-        for i in range(len(drug_list)):
-            for j in range(i + 1, len(drug_list)):
-                pair = frozenset([drug_list[i], drug_list[j]])
-
-                if pair in known_interactions:
-                    interaction = known_interactions[pair]
-                    warnings.append(
-                        f"⚠️ **{drug_list[i]} + {drug_list[j]}**\n"
-                        f"   风险等级: {interaction['level']}\n"
-                        f"   详细说明: {interaction['description']}"
-                    )
-
-        # 生成结果
-        if warnings:
-            result = "🔍 **药物交互检查结果**\n\n"
-            result += "发现以下药物交互风险:\n\n"
-            result += "\n\n".join(warnings)
-            result += "\n\n" + "=" * 50
-            result += "\n⚠️ **重要提示**: 以上信息仅供参考，请务必咨询医生或药师！"
-            log.warning(f"发现{len(warnings)}个交互风险")
-        else:
-            result = (
-                "✅ **未发现已知的药物交互风险**\n\n"
-                "注意: 这不能替代专业医疗建议。\n"
-                "使用新药前，请咨询医生或药师。"
-            )
-            log.info("未发现交互风险")
-
-        return result
+_DRUG_DATA: Dict[str, Dict] = {}
+_DRUG_INTERACTIONS: Dict[str, List[str]] = {}
 
 
-# 获取工具列表（供Agent使用）
-def get_drug_tools() -> List:
-    """获取所有药物工具"""
-    return [DrugToolkit.search_drug_info, DrugToolkit.check_drug_interaction]
+def _load_drug_data():
+    global _DRUG_DATA, _DRUG_INTERACTIONS
+    log.info(f"📚 正在从 {DRUGS_CSV_PATH} 加载药物数据...")
+
+    if not DRUGS_CSV_PATH.exists():
+        log.error(f"❌ 药物数据文件不存在：{DRUGS_CSV_PATH}")
+        return
+
+    try:
+        with open(DRUGS_CSV_PATH, "r", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            log.info(f"✅ CSV 表头：{reader.fieldnames}")
+
+            for row in reader:
+                drug_name = row.get("drug_name", "").strip()
+                if not drug_name:
+                    continue
+
+                # 👇 完全按照你的 CSV 表头读取！！！
+                _DRUG_DATA[drug_name] = {
+                    "generic_name": row.get("generic_name", ""),
+                    "category": row.get("category", ""),
+                    "indication": row.get("indication", ""),
+                    "dosage": row.get("dosage", ""),
+                    "contraindication": row.get("contraindication", ""),
+                    "side_effects": row.get("side_effects", ""),
+                    "interaction_drugs": row.get("interaction_drugs", ""),
+                }
+
+        log.info(f"✅ 药物数据预加载完成：共 {len(_DRUG_DATA)} 种药物")
+
+    except Exception as e:
+        log.error(f"❌ 加载失败：{str(e)}")
+
+
+_load_drug_data()
+
+
+# ===================== 工具函数 =====================
+@tool
+def get_side_effects(drug_name: str) -> str:
+    """获取药物副作用"""
+    info = _DRUG_DATA.get(drug_name)
+    if not info:
+        return f"未找到药物：{drug_name}"
+    return info["side_effects"]
+
+
+@tool
+def get_dosage(drug_name: str) -> str:
+    """获取药物用法用量"""
+    info = _DRUG_DATA.get(drug_name)
+    if not info:
+        return f"未找到药物：{drug_name}"
+    return info["dosage"]
+
+
+@tool
+def check_drug_interaction(drug_a: str, drug_b: str) -> str:
+    """检查药物相互作用"""
+    info_a = _DRUG_DATA.get(drug_a)
+    if not info_a:
+        return f"未找到药物：{drug_a}"
+
+    interactions = info_a.get("interaction_drugs", "")
+    if drug_b in interactions:
+        return f"⚠️ {drug_a} 与 {drug_b} 存在相互作用风险：\n{interactions}"
+
+    return f"✅ {drug_a} 与 {drug_b} 未发现明显相互作用"
+
+
+def get_drug_tools():
+    return [get_side_effects, get_dosage, check_drug_interaction]

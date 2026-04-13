@@ -543,7 +543,251 @@ if query_text and not st.session_state.is_loading:
 if st.session_state.is_loading and len(st.session_state.messages) > 0:
     last_user_msg = st.session_state.messages[-1]["content"]
     with st.spinner(""):
-        response = st.session_state.agent.chat(last_user_msg)
-    st.session_state.messages.append({"role": "assistant", "content": response})
+        # 使用真正的流式输出，而不是逐字符模拟
+        response_placeholder = st.empty()
+        full_response = ""
+        
+        # 从agent获取流式响应
+        for chunk in st.session_state.agent.chat_stream(last_user_msg):
+            full_response += chunk
+            response_placeholder.markdown(full_response + "▌")
+            
+        # 最终移除光标标记
+        response_placeholder.markdown(full_response)
+    
+    st.session_state.messages.append({"role": "assistant", "content": full_response})
     st.session_state.is_loading = False
     st.rerun()
+
+# src/app.py
+"""智能用药助手 - Streamlit应用（最新版本）"""
+import streamlit as st
+from pathlib import Path
+
+from src.agents.medication_agent import MedicationAgent
+from src.config.settings import settings
+from src.utils.logger import log
+
+# 页面配置
+st.set_page_config(
+    page_title="智能用药安全助手",
+    page_icon="🏥",
+    layout="centered",
+    initial_sidebar_state="expanded",
+)
+
+# 自定义CSS
+st.markdown(
+    """
+<style>
+    .main-header {
+        text-align: center;
+        padding: 1rem 0;
+    }
+    .warning-box {
+        background-color: #fff3cd;
+        border-left: 4px solid #ffc107;
+        padding: 1rem;
+        margin: 1rem 0;
+        border-radius: 4px;
+    }
+    .success-box {
+        background-color: #d4edda;
+        border-left: 4px solid #28a745;
+        padding: 1rem;
+        margin: 1rem 0;
+        border-radius: 4px;
+    }
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+
+@st.cache_resource
+def load_agent():
+    """加载Agent（使用缓存避免重复加载）"""
+    log.info("正在加载Agent...")
+    try:
+        agent = MedicationAgent()
+        log.info("Agent加载成功")
+        return agent
+    except Exception as e:
+        log.error(f"Agent加载失败: {e}")
+        st.error(f"❌ 系统初始化失败: {str(e)}")
+        st.stop()
+
+
+def main():
+    """主函数"""
+
+    # 标题
+    st.markdown(
+        "<h1 class='main-header'>🏥 智能用药安全助手</h1>", unsafe_allow_html=True
+    )
+    st.markdown("---")
+
+    # 使用说明（可折叠）
+    with st.expander("📖 使用说明", expanded=False):
+        st.markdown(
+            """
+        ### 功能介绍
+        
+        ✅ **药物信息查询**  
+        查询药物的适应症、用法用量、禁忌症、副作用等详细信息
+        
+        ⚠️ **药物交互检查**  
+        检查多种药物同时使用是否存在交互风险
+        
+        💡 **用药建议**  
+        基于专业知识提供用药建议和注意事项
+        
+        ### 使用示例
+        
+        - "阿司匹林有什么副作用？"
+        - "我在吃阿司匹林和布洛芬，有问题吗？"
+        - "布洛芬的正确用法是什么？"
+        - "高血压患者能吃布洛芬吗？"
+        
+        ### ⚠️ 重要提示
+        
+        本系统提供的信息**仅供参考**，不能替代专业医疗建议。  
+        使用任何药物前，请咨询医生或药师。
+        """
+        )
+
+    # 初始化会话状态
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    if "agent" not in st.session_state:
+        with st.spinner("🔄 正在初始化AI助手..."):
+            st.session_state.agent = load_agent()
+
+    # 显示历史消息
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    # 用户输入
+    if prompt := st.chat_input("请输入您的问题..."):
+        # 显示用户消息
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        st.session_state.messages.append({"role": "user", "content": prompt})
+
+        # 获取AI回复
+        with st.chat_message("assistant"):
+            with st.spinner("🤔 正在思考..."):
+                # 准备对话历史（只保留最近5轮）
+                chat_history = []
+                for msg in st.session_state.messages[-10:]:  # 最近5轮=10条消息
+                    if msg["role"] == "user":
+                        chat_history.append(("user", msg["content"]))
+                    else:
+                        chat_history.append(("assistant", msg["content"]))
+
+                # 创建响应占位符用于流式输出
+                response_placeholder = st.empty()
+                
+                # 调用Agent，获取流式输出
+                response = st.session_state.agent.chat(prompt, chat_history)
+                
+                # 流式显示响应
+                full_response = ""
+                # 将响应按字符逐个显示，模拟流式输出
+                for char in response:
+                    full_response += char
+                    response_placeholder.markdown(full_response + "▌")
+                    
+                # 最终显示完整响应（移除光标标记）
+                response_placeholder.markdown(full_response)
+
+            # 将完整响应添加到消息历史
+            st.session_state.messages.append({"role": "assistant", "content": full_response})
+
+    # 侧边栏
+    with st.sidebar:
+        st.header("📊 会话信息")
+
+        # 统计
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("对话轮次", len(st.session_state.messages) // 2)
+        with col2:
+            st.metric("消息数", len(st.session_state.messages))
+
+        st.markdown("---")
+
+        # 功能按钮
+        st.header("🔧 功能")
+
+        if st.button("🗑️ 清除对话历史", use_container_width=True):
+            st.session_state.messages = []
+            st.rerun()
+
+        if st.button("💾 导出对话", use_container_width=True):
+            # 导出为文本
+            chat_text = "\n\n".join(
+                [
+                    f"{msg['role'].upper()}: {msg['content']}"
+                    for msg in st.session_state.messages
+                ]
+            )
+            st.download_button(
+                label="📥 下载对话记录",
+                data=chat_text,
+                file_name="chat_history.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
+
+        st.markdown("---")
+
+        # 关于信息
+        st.header("ℹ️ 关于")
+        st.markdown(
+            """
+        **开发者**: ZA
+        
+        **技术栈**:
+        - LangChain 0.3+
+        - OpenAI GPT-3.5
+        - Chroma DB
+        - Streamlit
+        
+        **版本**: v1.0.0
+        
+        **GitHub**: [查看源码](#)
+        """
+        )
+
+        st.markdown("---")
+
+        # 免责声明
+        st.markdown(
+            """
+        <div class="warning-box">
+        <strong>⚠️ 免责声明</strong><br>
+        本系统提供的信息仅供参考，不能替代专业医疗建议、诊断或治疗。
+        使用任何药物前，请咨询医生或药师。
+        </div>
+        """,
+            unsafe_allow_html=True,
+        )
+
+        # 环境信息（开发模式显示）
+        if settings.app_env == "development":
+            with st.expander("🔧 调试信息"):
+                st.json(
+                    {
+                        "环境": settings.app_env,
+                        "模型": settings.openai_model,
+                        "日志级别": settings.log_level,
+                        "会话消息数": len(st.session_state.messages),
+                    }
+                )
+
+
+if __name__ == "__main__":
+    main()

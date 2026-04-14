@@ -33,21 +33,22 @@ class MedicationAgent:
                     if drug in user_input:
                         info = _DRUG_DATA[drug]
                         res = f"{drug}的常见副作用：\n{info['side_effects']}"
-                        # 使用全局缓存实例保存结果
                         self.cache.set(cache_key, res)
                         return res
 
             # 2. 用法用量
-            if any(
-                k in user_input for k in ["用法", "用量", "怎么吃", "吃多少", "剂量"]
-            ):
+            if any(k in user_input for k in ["用法", "用量", "怎么吃", "吃多少", "剂量"]):
+                # 尝试从输入中直接匹配药物名
+                matched_drug = None
                 for drug in _DRUG_DATA:
                     if drug in user_input:
-                        info = _DRUG_DATA[drug]
-                        res = f"{drug}的用法用量：\n{info['dosage']}"
-                        # 使用全局缓存实例保存结果
-                        self.cache.set(cache_key, res)
-                        return res
+                        matched_drug = drug
+                        break
+                if matched_drug:
+                    info = _DRUG_DATA[matched_drug]
+                    res = f"{matched_drug}的用法用量：\n{info['dosage']}"
+                    self.cache.set(cache_key, res)
+                    return res
 
             # 3. 药物相互作用 / 能不能一起吃
             if any(k in user_input for k in ["一起吃", "相互作用", "同服", "冲突"]):
@@ -59,7 +60,6 @@ class MedicationAgent:
                         res = f"⚠️ {a} 与 {b} 存在相互作用：\n{info_a['interaction_drugs']}"
                     else:
                         res = f"✅ {a} 与 {b} 未发现明显相互作用"
-                    # 使用全局缓存实例保存结果
                     self.cache.set(cache_key, res)
                     return res
 
@@ -72,7 +72,7 @@ class MedicationAgent:
         # ===================== 复杂问题才走 LLM（兜底） =====================
         try:
             messages = [("system", self.system_message)]
-            messages.extend(history_to_use)
+            messages.extend(history_to_use)  # 确保历史消息被加入
             messages.append(("human", user_input))
 
             response = self.llm_with_tools.invoke(messages)
@@ -111,23 +111,19 @@ class MedicationAgent:
                             )
 
                 final_messages = messages + intermediate_messages
-                # 使用stream而不是invoke来支持流式输出逻辑
                 final_response_stream = self.llm.stream(final_messages)
                 
-                # 处理流式响应
                 response_content = ""
                 for chunk in final_response_stream:
                     if hasattr(chunk, 'content') and chunk.content:
                         response_content += chunk.content
 
-                # 如果响应为空，说明大模型无法回答
                 if not response_content.strip():
                     response_content = "抱歉，我不太清楚这个问题的答案。"
+
             else:
-                # 如果没有工具调用，直接从response获取内容
                 response_content = response.content if hasattr(response, 'content') and response.content else "抱歉，我不太清楚这个问题的答案。"
 
-            # 确保响应内容不为空
             if not response_content.strip():
                 response_content = "抱歉，我不太清楚这个问题的答案。"
 
@@ -135,7 +131,6 @@ class MedicationAgent:
             if not chat_history:
                 self.chat_history.append(HumanMessage(content=user_input))
                 self.chat_history.append(AIMessage(content=response_content))
-                # 使用全局缓存实例保存结果
                 self.cache.set(cache_key, response_content)
 
             return response_content
